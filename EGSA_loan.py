@@ -20,7 +20,10 @@ st.title("EGSA2025 Interest-Free Loan Management App")
 
 DATA_FILE = "loan_free.xlsx"
 
+# Loan period
 LOAN_TERM_MONTHS = 10
+
+# Monthly compounded penalty
 MONTHLY_PENALTY_RATE = 0.10
 
 
@@ -30,6 +33,8 @@ MONTHLY_PENALTY_RATE = 0.10
 
 COLUMNS = [
     "Id",
+    "full_name",
+    "phone_number",
     "loan_amount",
     "disbursed_date",
     "due_date",
@@ -42,23 +47,52 @@ COLUMNS = [
 
 
 # ============================================================
-# LOAD OR CREATE DATA
+# LOAD DATA
 # ============================================================
 
-if os.path.exists(DATA_FILE):
+def load_data():
 
-    df = pd.read_csv(
-        DATA_FILE,
-        keep_default_na=False
-    )
+    # --------------------------------------------------------
+    # File does not exist
+    # --------------------------------------------------------
 
-else:
+    if not os.path.exists(DATA_FILE):
 
-    df = pd.DataFrame(columns=COLUMNS)
+        return pd.DataFrame(
+            columns=COLUMNS
+        )
+
+    # --------------------------------------------------------
+    # Read Excel file
+    # --------------------------------------------------------
+
+    try:
+
+        data = pd.read_excel(
+            DATA_FILE,
+            engine="openpyxl"
+        )
+
+        return data
+
+    except Exception as e:
+
+        st.error(
+            f"Unable to read {DATA_FILE}."
+        )
+
+        st.error(
+            f"Error: {e}"
+        )
+
+        st.stop()
+
+
+df = load_data()
 
 
 # ============================================================
-# PREPARE DATA
+# PREPARE REQUIRED COLUMNS
 # ============================================================
 
 for col in COLUMNS:
@@ -66,6 +100,7 @@ for col in COLUMNS:
     if col not in df.columns:
 
         if col == "returned":
+
             df[col] = False
 
         elif col in [
@@ -74,13 +109,74 @@ for col in COLUMNS:
             "penalty_amount",
             "total_due"
         ]:
+
             df[col] = 0.0
 
         else:
+
             df[col] = ""
 
 
-# Date columns
+# ============================================================
+# KEEP ONLY EXPECTED INTERNAL COLUMNS
+# ============================================================
+
+df = df[
+    COLUMNS
+].copy()
+
+
+# ============================================================
+# CLEAN ID
+# ============================================================
+
+df["Id"] = (
+    df["Id"]
+    .fillna("")
+    .astype(str)
+    .str.strip()
+)
+
+# Remove Excel-style decimal IDs such as 1001.0
+df["Id"] = df["Id"].apply(
+
+    lambda x:
+        str(int(float(x)))
+        if x not in ["", "nan", "None"]
+        and str(x).replace(".", "", 1).isdigit()
+        and float(x).is_integer()
+        else x
+)
+
+
+# ============================================================
+# CLEAN NAME
+# ============================================================
+
+df["full_name"] = (
+    df["full_name"]
+    .fillna("")
+    .astype(str)
+    .str.strip()
+)
+
+
+# ============================================================
+# CLEAN PHONE
+# ============================================================
+
+df["phone_number"] = (
+    df["phone_number"]
+    .fillna("")
+    .astype(str)
+    .str.strip()
+)
+
+
+# ============================================================
+# DATE COLUMNS
+# ============================================================
+
 for col in [
     "disbursed_date",
     "due_date",
@@ -93,7 +189,10 @@ for col in [
     )
 
 
-# Numeric columns
+# ============================================================
+# NUMERIC COLUMNS
+# ============================================================
+
 for col in [
     "loan_amount",
     "months_late",
@@ -107,59 +206,71 @@ for col in [
     ).fillna(0)
 
 
-# Returned column
+# ============================================================
+# RETURNED COLUMN
+# ============================================================
+
 if df["returned"].dtype == object:
 
     df["returned"] = (
         df["returned"]
         .astype(str)
+        .str.strip()
         .str.lower()
-        .isin([
-            "true",
-            "1",
-            "yes",
-            "returned"
-        ])
+        .isin(
+            [
+                "true",
+                "1",
+                "yes",
+                "y",
+                "returned"
+            ]
+        )
     )
 
-df["returned"] = (
-    df["returned"]
-    .fillna(False)
-    .astype(bool)
-)
+else:
+
+    df["returned"] = (
+        df["returned"]
+        .fillna(False)
+        .astype(bool)
+    )
 
 
 # ============================================================
-# GENERATE MISSING LOAN IDs
+# GENERATE MISSING IDs
 # ============================================================
-
-if "loan_id" not in df.columns:
-
-    df["loan_id"] = ""
-
-df["loan_id"] = (
-    df["loan_id"]
-    .fillna("")
-    .astype(str)
-)
 
 existing_ids = set(
-    df["loan_id"]
+    df["Id"]
+    .astype(str)
+    .str.strip()
 )
 
 next_id = 1001
 
 for index in df.index:
 
+    current_id = str(
+        df.loc[index, "Id"]
+    ).strip()
+
     if (
-        df.loc[index, "loan_id"] == ""
-        or df.loc[index, "loan_id"] == "nan"
+        current_id == ""
+        or current_id.lower() in [
+            "nan",
+            "none"
+        ]
     ):
 
         while str(next_id) in existing_ids:
+
             next_id += 1
 
-        df.loc[index, "loan_id"] = str(next_id)
+        df.loc[
+            index,
+            "Id"
+        ] = str(next_id)
 
         existing_ids.add(
             str(next_id)
@@ -169,7 +280,7 @@ for index in df.index:
 
 
 # ============================================================
-# FUNCTIONS
+# PENALTY CALCULATION
 # ============================================================
 
 def calculate_penalty(
@@ -188,18 +299,30 @@ def calculate_penalty(
         pay_date
     )
 
+    # No valid due date
     if pd.isna(due):
 
-        return 0, 0.0, amount
+        return (
+            0,
+            0.0,
+            amount
+        )
 
+    # Paid on or before due date
     if pay <= due:
 
-        return 0, 0.0, amount
+        return (
+            0,
+            0.0,
+            amount
+        )
 
+    # Calculate late days
     days_late = (
         pay - due
     ).days
 
+    # Every 30 days = one month
     months_late = math.ceil(
         days_late / 30
     )
@@ -207,16 +330,24 @@ def calculate_penalty(
     total_due = amount
     penalty = 0.0
 
-    for _ in range(months_late):
+    # Compound 10% every month
+    for _ in range(
+        months_late
+    ):
 
-        month_penalty = (
-            total_due *
+        monthly_penalty = (
+            total_due
+            *
             MONTHLY_PENALTY_RATE
         )
 
-        penalty += month_penalty
+        penalty += (
+            monthly_penalty
+        )
 
-        total_due += month_penalty
+        total_due += (
+            monthly_penalty
+        )
 
     return (
         months_late,
@@ -225,43 +356,48 @@ def calculate_penalty(
     )
 
 
-def has_active_loan(
-    phone,
-    data
-):
-
-    if data.empty:
-        return False
-
-    phone = str(phone).strip()
-
-    active = data[
-        data["returned"] == False
-    ]
-
-    return phone in (
-        active["phone_number"]
-        .astype(str)
-        .str.strip()
-        .values
-    )
-
+# ============================================================
+# SAVE DATA
+# ============================================================
 
 def save_data(data):
 
-    data.to_csv(
-        DATA_FILE,
-        index=False
-    )
+    try:
+
+        # Ensure correct column order
+        data = data[
+            COLUMNS
+        ].copy()
+
+        data.to_excel(
+            DATA_FILE,
+            index=False,
+            engine="openpyxl"
+        )
+
+        return True
+
+    except Exception as e:
+
+        st.error(
+            f"Unable to save data: {e}"
+        )
+
+        return False
 
 
 # ============================================================
-# UPDATE PENALTIES
+# CURRENT DATE
 # ============================================================
 
 today = pd.Timestamp(
     date.today()
 )
+
+
+# ============================================================
+# UPDATE ACTIVE LOAN PENALTIES
+# ============================================================
 
 for index, row in df.iterrows():
 
@@ -291,9 +427,6 @@ for index, row in df.iterrows():
         ] = total_due
 
 
-save_data(df)
-
-
 # ============================================================
 # SIDEBAR
 # ============================================================
@@ -318,22 +451,38 @@ phone_number = st.sidebar.text_input(
 loan_amount = st.sidebar.number_input(
     "Loan Amount",
     min_value=0.0,
-    step=100.0
+    step=100.0,
+    format="%.0f"
 )
 
 disbursed_date = st.sidebar.date_input(
     "Disbursed Date",
-    date.today()
+    value=date.today()
 )
 
 
+# ============================================================
+# SAVE NEW LOAN
+# ============================================================
+
 if st.sidebar.button(
-    "Save Loan"
+    "Save Loan",
+    type="primary"
 ):
 
-    full_name = full_name.strip()
+    full_name = (
+        full_name
+        .strip()
+    )
 
-    phone_number = phone_number.strip()
+    phone_number = (
+        phone_number
+        .strip()
+    )
+
+    # --------------------------------------------------------
+    # Validation
+    # --------------------------------------------------------
 
     if not full_name:
 
@@ -353,92 +502,149 @@ if st.sidebar.button(
             "Loan amount must be greater than zero."
         )
 
-    elif has_active_loan(
-        phone_number,
-        df
-    ):
-
-        st.sidebar.error(
-            "This phone number already has an active loan."
-        )
-
     else:
 
-        # Generate ID
-        existing_ids = set(
-            df["loan_id"]
+        # ----------------------------------------------------
+        # Check active loan
+        # ----------------------------------------------------
+
+        active_phones = set(
+            df.loc[
+                df["returned"] == False,
+                "phone_number"
+            ]
             .astype(str)
+            .str.strip()
         )
 
-        new_id = 1001
+        if phone_number in active_phones:
 
-        while str(new_id) in existing_ids:
-
-            new_id += 1
-
-        # Due date
-        due_date = (
-            disbursed_date
-            + relativedelta(
-                months=LOAN_TERM_MONTHS
+            st.sidebar.error(
+                "This phone number already has an active loan."
             )
-        )
 
-        new_row = {
+        else:
 
-            "loan_id": str(new_id),
+            # ------------------------------------------------
+            # Generate next ID
+            # ------------------------------------------------
 
-            "full_name": full_name,
+            numeric_ids = pd.to_numeric(
+                df["Id"],
+                errors="coerce"
+            )
 
-            "phone_number": phone_number,
+            if numeric_ids.notna().any():
 
-            "loan_amount": loan_amount,
+                new_id = int(
+                    numeric_ids.max()
+                ) + 1
 
-            "disbursed_date": pd.Timestamp(
+            else:
+
+                new_id = 1001
+
+
+            # ------------------------------------------------
+            # Calculate due date
+            # ------------------------------------------------
+
+            due_date = (
                 disbursed_date
-            ),
+                +
+                relativedelta(
+                    months=LOAN_TERM_MONTHS
+                )
+            )
 
-            "due_date": pd.Timestamp(
-                due_date
-            ),
 
-            "returned": False,
+            # ------------------------------------------------
+            # New row
+            # ------------------------------------------------
 
-            "return_date": pd.NaT,
+            new_row = {
 
-            "months_late": 0,
+                "Id":
+                    str(new_id),
 
-            "penalty_amount": 0.0,
+                "full_name":
+                    full_name,
 
-            "total_due": loan_amount
-        }
+                "phone_number":
+                    phone_number,
 
-        df = pd.concat(
-            [
-                df,
-                pd.DataFrame([new_row])
-            ],
-            ignore_index=True
-        )
+                "loan_amount":
+                    float(loan_amount),
 
-        save_data(df)
+                "disbursed_date":
+                    pd.Timestamp(
+                        disbursed_date
+                    ),
 
-        st.sidebar.success(
-            f"Loan {new_id} saved successfully!"
-        )
+                "due_date":
+                    pd.Timestamp(
+                        due_date
+                    ),
 
-        st.rerun()
+                "returned":
+                    False,
+
+                "return_date":
+                    pd.NaT,
+
+                "months_late":
+                    0,
+
+                "penalty_amount":
+                    0.0,
+
+                "total_due":
+                    float(
+                        loan_amount
+                    )
+            }
+
+
+            # ------------------------------------------------
+            # Add row
+            # ------------------------------------------------
+
+            df = pd.concat(
+                [
+                    df,
+                    pd.DataFrame(
+                        [new_row]
+                    )
+                ],
+                ignore_index=True
+            )
+
+
+            # ------------------------------------------------
+            # Save
+            # ------------------------------------------------
+
+            if save_data(df):
+
+                st.sidebar.success(
+                    f"Loan {new_id} saved successfully!"
+                )
+
+                st.rerun()
 
 
 # ============================================================
 # UPLOAD LOANS
 # ============================================================
 
-st.sidebar.markdown("---")
+st.sidebar.markdown(
+    "---"
+)
 
 st.sidebar.header(
     "📤 Upload Loans"
 )
+
 
 uploaded_file = st.sidebar.file_uploader(
     "Upload CSV or Excel",
@@ -449,24 +655,76 @@ uploaded_file = st.sidebar.file_uploader(
 )
 
 
-if uploaded_file:
+if uploaded_file is not None:
 
     try:
+
+        # ----------------------------------------------------
+        # Read uploaded file
+        # ----------------------------------------------------
 
         if uploaded_file.name.lower().endswith(
             ".csv"
         ):
 
-            upload_df = pd.read_csv(
-                uploaded_file
-            )
+            # Try several common encodings
+            upload_df = None
+
+            for encoding in [
+                "utf-8",
+                "utf-8-sig",
+                "cp1252",
+                "latin1"
+            ]:
+
+                try:
+
+                    upload_file = uploaded_file
+
+                    upload_file.seek(0)
+
+                    upload_df = pd.read_csv(
+                        upload_file,
+                        encoding=encoding
+                    )
+
+                    break
+
+                except UnicodeDecodeError:
+
+                    continue
+
+
+            if upload_df is None:
+
+                st.sidebar.error(
+                    "Unable to read CSV encoding."
+                )
+
+                st.stop()
 
         else:
 
             upload_df = pd.read_excel(
-                uploaded_file
+                uploaded_file,
+                engine="openpyxl"
             )
 
+
+        # ----------------------------------------------------
+        # Normalize column names
+        # ----------------------------------------------------
+
+        upload_df.columns = (
+            upload_df.columns
+            .astype(str)
+            .str.strip()
+        )
+
+
+        # ----------------------------------------------------
+        # Required columns
+        # ----------------------------------------------------
 
         required_cols = {
             "full_name",
@@ -478,7 +736,8 @@ if uploaded_file:
 
         missing_cols = (
             required_cols
-            - set(upload_df.columns)
+            -
+            set(upload_df.columns)
         )
 
 
@@ -486,12 +745,19 @@ if uploaded_file:
 
             st.sidebar.error(
                 "Missing columns: "
-                + ", ".join(
-                    missing_cols
+                +
+                ", ".join(
+                    sorted(
+                        missing_cols
+                    )
                 )
             )
 
         else:
+
+            # ------------------------------------------------
+            # Convert dates
+            # ------------------------------------------------
 
             upload_df[
                 "disbursed_date"
@@ -503,6 +769,10 @@ if uploaded_file:
             )
 
 
+            # ------------------------------------------------
+            # Convert loan amount
+            # ------------------------------------------------
+
             upload_df[
                 "loan_amount"
             ] = pd.to_numeric(
@@ -512,6 +782,10 @@ if uploaded_file:
                 errors="coerce"
             )
 
+
+            # ------------------------------------------------
+            # Remove invalid rows
+            # ------------------------------------------------
 
             upload_df = upload_df.dropna(
                 subset=[
@@ -523,14 +797,21 @@ if uploaded_file:
             )
 
 
+            # ------------------------------------------------
             # Existing IDs
+            # ------------------------------------------------
+
             existing_ids = set(
-                df["loan_id"]
+                df["Id"]
                 .astype(str)
+                .str.strip()
             )
 
 
+            # ------------------------------------------------
             # Existing active phones
+            # ------------------------------------------------
+
             existing_phones = set(
                 df.loc[
                     df["returned"] == False,
@@ -541,22 +822,73 @@ if uploaded_file:
             )
 
 
+            # ------------------------------------------------
+            # Determine next ID
+            # ------------------------------------------------
+
+            numeric_ids = pd.to_numeric(
+                df["Id"],
+                errors="coerce"
+            )
+
+
+            if numeric_ids.notna().any():
+
+                next_id = int(
+                    numeric_ids.max()
+                ) + 1
+
+            else:
+
+                next_id = 1001
+
+
             new_rows = []
 
-            next_id = 1001
+            skipped_count = 0
 
+
+            # ------------------------------------------------
+            # Process uploaded rows
+            # ------------------------------------------------
 
             for _, row in upload_df.iterrows():
 
                 phone = str(
-                    row["phone_number"]
+                    row[
+                        "phone_number"
+                    ]
                 ).strip()
 
 
+                full_name_upload = str(
+                    row[
+                        "full_name"
+                    ]
+                ).strip()
+
+
+                amount = float(
+                    row[
+                        "loan_amount"
+                    ]
+                )
+
+
+                # --------------------------------------------
                 # Skip active duplicate
+                # --------------------------------------------
+
                 if phone in existing_phones:
+
+                    skipped_count += 1
+
                     continue
 
+
+                # --------------------------------------------
+                # Find unused ID
+                # --------------------------------------------
 
                 while str(next_id) in existing_ids:
 
@@ -568,30 +900,46 @@ if uploaded_file:
                 )
 
 
+                # --------------------------------------------
+                # Due date
+                # --------------------------------------------
+
+                uploaded_disbursed_date = pd.to_datetime(
+                    row[
+                        "disbursed_date"
+                    ]
+                )
+
+
                 due_date = (
-                    row["disbursed_date"]
-                    + pd.DateOffset(
+                    uploaded_disbursed_date
+                    +
+                    relativedelta(
                         months=LOAN_TERM_MONTHS
                     )
                 )
 
 
+                # --------------------------------------------
+                # Create row
+                # --------------------------------------------
+
                 new_rows.append({
 
-                    "loan_id": loan_id,
+                    "Id":
+                        loan_id,
 
-                    "full_name": str(
-                        row["full_name"]
-                    ).strip(),
+                    "full_name":
+                        full_name_upload,
 
-                    "phone_number": phone,
+                    "phone_number":
+                        phone,
 
-                    "loan_amount": float(
-                        row["loan_amount"]
-                    ),
+                    "loan_amount":
+                        amount,
 
                     "disbursed_date":
-                        row["disbursed_date"],
+                        uploaded_disbursed_date,
 
                     "due_date":
                         due_date,
@@ -609,9 +957,7 @@ if uploaded_file:
                         0.0,
 
                     "total_due":
-                        float(
-                            row["loan_amount"]
-                        )
+                        amount
                 })
 
 
@@ -626,6 +972,10 @@ if uploaded_file:
                 next_id += 1
 
 
+            # ------------------------------------------------
+            # Add uploaded loans
+            # ------------------------------------------------
+
             if new_rows:
 
                 df = pd.concat(
@@ -639,21 +989,43 @@ if uploaded_file:
                 )
 
 
-                save_data(df)
+                if save_data(df):
+
+                    message = (
+                        f"{len(new_rows)} "
+                        "loan(s) uploaded successfully."
+                    )
+
+                    if skipped_count > 0:
+
+                        message += (
+                            f" {skipped_count} "
+                            "duplicate active loan(s) skipped."
+                        )
 
 
-                st.sidebar.success(
-                    f"{len(new_rows)} loans uploaded successfully."
-                )
+                    st.sidebar.success(
+                        message
+                    )
 
 
-                st.rerun()
+                    st.rerun()
+
 
             else:
 
-                st.sidebar.warning(
-                    "No new loans were added."
-                )
+                if skipped_count > 0:
+
+                    st.sidebar.warning(
+                        f"No new loans were added. "
+                        f"{skipped_count} active duplicate(s) skipped."
+                    )
+
+                else:
+
+                    st.sidebar.warning(
+                        "No valid new loans were found."
+                    )
 
 
     except Exception as e:
@@ -672,47 +1044,79 @@ st.subheader(
 )
 
 
+# Active loans
 active_loans = df[
     df["returned"] == False
-]
+].copy()
 
 
+# Returned loans
 returned_loans = df[
     df["returned"] == True
-]
+].copy()
 
 
+# Overdue
 overdue_loans = active_loans[
-    active_loans["due_date"]
-    < today
-]
+    active_loans["due_date"] < today
+].copy()
 
+
+# ============================================================
+# SUMMARY CARDS
+# ============================================================
 
 col1, col2, col3, col4 = st.columns(4)
 
 
 col1.metric(
     "Total Loans",
-    len(df)
+    f"{len(df):,}"
 )
 
 
 col2.metric(
     "In Progress",
-    len(active_loans)
+    f"{len(active_loans):,}"
 )
 
 
 col3.metric(
     "Returned",
-    len(returned_loans)
+    f"{len(returned_loans):,}"
 )
 
 
 col4.metric(
     "Overdue",
-    len(overdue_loans)
+    f"{len(overdue_loans):,}"
 )
+
+
+# ============================================================
+# DATE FORMAT FUNCTION
+# ============================================================
+
+def format_date(value):
+
+    if pd.isna(value):
+
+        return ""
+
+    value = pd.to_datetime(
+        value,
+        errors="coerce"
+    )
+
+    if pd.isna(value):
+
+        return ""
+
+    return (
+        f"{value.month}/"
+        f"{value.day}/"
+        f"{value.year}"
+    )
 
 
 # ============================================================
@@ -728,16 +1132,14 @@ display_df = df.copy()
 
 
 # ------------------------------------------------------------
-# STATUS
+# Status
 # ------------------------------------------------------------
 
 display_df["Status"] = display_df.apply(
 
     lambda row:
-
         "Returned"
         if row["returned"]
-
         else "In Progress",
 
     axis=1
@@ -745,12 +1147,12 @@ display_df["Status"] = display_df.apply(
 
 
 # ------------------------------------------------------------
-# ONLY FIVE COLUMNS
+# Only five columns
 # ------------------------------------------------------------
 
 display_df = display_df[
     [
-        "loan_id",
+        "Id",
         "disbursed_date",
         "loan_amount",
         "due_date",
@@ -760,14 +1162,14 @@ display_df = display_df[
 
 
 # ------------------------------------------------------------
-# COLUMN NAMES
+# Rename
 # ------------------------------------------------------------
 
 display_df = display_df.rename(
 
     columns={
 
-        "loan_id":
+        "Id":
             "ID",
 
         "disbursed_date":
@@ -783,46 +1185,43 @@ display_df = display_df.rename(
 
 
 # ------------------------------------------------------------
-# FORMAT DATES
+# Format dates
 # ------------------------------------------------------------
 
 display_df[
     "Disbursed Date"
-] = pd.to_datetime(
-    display_df[
-        "Disbursed Date"
-    ]
-).dt.strftime(
-    "%-m/%-d/%Y"
+] = display_df[
+    "Disbursed Date"
+].apply(
+    format_date
 )
 
 
 display_df[
     "Due Date"
-] = pd.to_datetime(
-    display_df[
-        "Due Date"
-    ]
-).dt.strftime(
-    "%-m/%-d/%Y"
+] = display_df[
+    "Due Date"
+].apply(
+    format_date
 )
 
 
 # ------------------------------------------------------------
-# FORMAT AMOUNT
+# Format amount
 # ------------------------------------------------------------
 
 display_df[
     "Loan Amount"
 ] = display_df[
     "Loan Amount"
-].map(
-    lambda x: f"{x:,.0f}"
+].apply(
+    lambda x:
+        f"{float(x):,.0f}"
 )
 
 
 # ------------------------------------------------------------
-# DISPLAY
+# Display
 # ------------------------------------------------------------
 
 st.dataframe(
@@ -844,34 +1243,54 @@ st.subheader(
 if active_loans.empty:
 
     st.info(
-        "No active loans."
+        "No loans are currently in progress."
     )
 
 else:
+
+    # --------------------------------------------------------
+    # Loan selection
+    # --------------------------------------------------------
+
+    loan_options = (
+        active_loans.index
+        .tolist()
+    )
+
 
     selected_index = st.selectbox(
 
         "Select Loan",
 
-        active_loans.index,
+        loan_options,
 
-        format_func=lambda i:
+        format_func=lambda index:
+
             (
-                f"{df.loc[i, 'loan_id']} | "
-                f"{df.loc[i, 'full_name']} | "
-                f"{df.loc[i, 'loan_amount']:,.0f}"
+                f"ID {df.loc[index, 'Id']} | "
+                f"{df.loc[index, 'full_name']} | "
+                f"{df.loc[index, 'loan_amount']:,.0f}"
             )
     )
 
 
+    # --------------------------------------------------------
+    # Return date
+    # --------------------------------------------------------
+
     return_date = st.date_input(
         "Return Date",
-        date.today()
+        value=date.today()
     )
 
 
+    # --------------------------------------------------------
+    # Confirm return
+    # --------------------------------------------------------
+
     if st.button(
-        "Confirm Return"
+        "Confirm Return",
+        type="primary"
     ):
 
         selected_row = df.loc[
@@ -879,8 +1298,14 @@ else:
         ]
 
 
+        # ----------------------------------------------------
+        # Validate return date
+        # ----------------------------------------------------
+
         if (
-            pd.Timestamp(return_date)
+            pd.Timestamp(
+                return_date
+            )
             <
             selected_row[
                 "disbursed_date"
@@ -893,6 +1318,10 @@ else:
             )
 
         else:
+
+            # ------------------------------------------------
+            # Calculate penalty
+            # ------------------------------------------------
 
             months_late, penalty, total_due = (
                 calculate_penalty(
@@ -909,6 +1338,10 @@ else:
                 )
             )
 
+
+            # ------------------------------------------------
+            # Update loan
+            # ------------------------------------------------
 
             df.loc[
                 selected_index,
@@ -942,23 +1375,30 @@ else:
             ] = total_due
 
 
-            save_data(df)
+            # ------------------------------------------------
+            # Save
+            # ------------------------------------------------
 
+            if save_data(df):
 
-            st.success(
-                f"""
-                Loan {selected_row['loan_id']} returned successfully.
+                st.success(
+                    f"Loan {selected_row['Id']} "
+                    "returned successfully."
+                )
 
-                Months late: {months_late}
+                st.info(
+                    f"Months late: {months_late}"
+                )
 
-                Penalty: {penalty:,.2f}
+                st.info(
+                    f"Penalty: {penalty:,.2f}"
+                )
 
-                Total Due: {total_due:,.2f}
-                """
-            )
+                st.info(
+                    f"Total Due: {total_due:,.2f}"
+                )
 
-
-            st.rerun()
+                st.rerun()
 
 
 # ============================================================
@@ -985,27 +1425,39 @@ if overdue_display.empty:
 
 else:
 
+    # --------------------------------------------------------
+    # Status
+    # --------------------------------------------------------
+
     overdue_display[
         "Status"
     ] = "Overdue"
 
 
+    # --------------------------------------------------------
+    # Five columns
+    # --------------------------------------------------------
+
     overdue_display = overdue_display[
         [
-            "loan_id",
+            "Id",
             "disbursed_date",
             "loan_amount",
             "due_date",
             "Status"
         ]
-    ]
+    ].copy()
 
+
+    # --------------------------------------------------------
+    # Rename
+    # --------------------------------------------------------
 
     overdue_display = overdue_display.rename(
 
         columns={
 
-            "loan_id":
+            "Id":
                 "ID",
 
             "disbursed_date":
@@ -1020,39 +1472,56 @@ else:
     )
 
 
+    # --------------------------------------------------------
+    # Format dates
+    # --------------------------------------------------------
+
     overdue_display[
         "Disbursed Date"
-    ] = pd.to_datetime(
-        overdue_display[
-            "Disbursed Date"
-        ]
-    ).dt.strftime(
-        "%-m/%-d/%Y"
+    ] = overdue_display[
+        "Disbursed Date"
+    ].apply(
+        format_date
     )
 
 
     overdue_display[
         "Due Date"
-    ] = pd.to_datetime(
-        overdue_display[
-            "Due Date"
-        ]
-    ).dt.strftime(
-        "%-m/%-d/%Y"
+    ] = overdue_display[
+        "Due Date"
+    ].apply(
+        format_date
     )
 
+
+    # --------------------------------------------------------
+    # Format amount
+    # --------------------------------------------------------
 
     overdue_display[
         "Loan Amount"
     ] = overdue_display[
         "Loan Amount"
-    ].map(
-        lambda x: f"{x:,.0f}"
+    ].apply(
+        lambda x:
+            f"{float(x):,.0f}"
     )
 
+
+    # --------------------------------------------------------
+    # Display
+    # --------------------------------------------------------
 
     st.dataframe(
         overdue_display,
         use_container_width=True,
         hide_index=True
     )
+
+
+# ============================================================
+# SAVE LATEST DATA
+# ============================================================
+
+# Save updated penalty calculations
+save_data(df)
