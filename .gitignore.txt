@@ -1,0 +1,4 @@
+awo_loans.csv
+venv/
+__pycache__/
+.env
