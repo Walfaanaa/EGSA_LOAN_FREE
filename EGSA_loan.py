@@ -11,14 +11,14 @@ import os
 # ============================================================
 
 st.set_page_config(
-    page_title="AWO Loan Management App",
+    page_title="EGSA2025 Loan Management App",
     page_icon="💰",
     layout="wide"
 )
 
-st.title("AWO Interest-Free Loan Management App")
+st.title("EGSA2025 Interest-Free Loan Management App")
 
-DATA_FILE = "awo_loans.csv"
+DATA_FILE = "loan_free.xlsx"
 
 LOAN_TERM_MONTHS = 10
 MONTHLY_PENALTY_RATE = 0.10
@@ -29,9 +29,7 @@ MONTHLY_PENALTY_RATE = 0.10
 # ============================================================
 
 COLUMNS = [
-    "loan_id",
-    "full_name",
-    "phone_number",
+    "Id",
     "loan_amount",
     "disbursed_date",
     "due_date",
